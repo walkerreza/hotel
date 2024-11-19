@@ -73,18 +73,31 @@ export const daftarReservasi = async (req, res) => {
 export const hapusReservasi = async (req, res) => {
     try {
         const { id } = req.params;
-        const reservasi = await Reservasis.findByPk(id);
-        if (!reservasi) {
-            return res.status(404).json({ message: "Reservasi tidak ditemukan" });
+
+        if (id) {
+            // Hapus berdasarkan ID
+            const reservasi = await Reservasis.findByPk(id);
+            if (!reservasi) {
+                return res.status(404).json({ message: "Reservasi tidak ditemukan" });
+            }
+            if (reservasi.status_reservasi !== 'selesai') {
+                return res.status(400).json({ message: "Reservasi hanya dapat dihapus jika statusnya 'selesai'" });
+            }
+            await reservasi.destroy();
+
+            await Kamars.update(
+                { status_kamar: 'tersedia' },
+                { where: { id: reservasi.kamar_id } }
+            );
+
+            return res.json({ message: "Reservasi berhasil dihapus" });
+        } else {
+            // Hapus semua reservasi dengan status 'selesai'
+            const deletedCount = await Reservasis.destroy({
+                where: { status_reservasi: 'selesai' }
+            });
+            return res.json({ message: `${deletedCount} reservasi berhasil dihapus` });
         }
-        await reservasi.destroy();
-
-        await Kamars.update(
-            { status_kamar: 'tersedia' },
-            { where: { id: reservasi.kamar_id } }
-        );
-
-        res.json({ message: "Reservasi berhasil dihapus" });
     } catch (error) {
         res.status(500).json({ message: error.message });
     }

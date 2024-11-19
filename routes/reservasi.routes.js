@@ -11,7 +11,7 @@ routerReservasi.post("/", authenticateToken,isUser, buatReservasi);
 routerReservasi.get("/", authenticateToken, daftarReservasi);
 routerReservasi.put("/:id/status", authenticateToken, isAdmin, updateStatusReservasi);
 
-routerReservasi.delete("/:id", authenticateToken, isAdmin, hapusReservasi);
+routerReservasi.delete("/:id?", authenticateToken, isAdmin, hapusReservasi); //jika id kosong maka hapus semua reservasi
 
 
 export default routerReservasi;

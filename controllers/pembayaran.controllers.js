@@ -35,7 +35,13 @@ export const buatPembayaran = async (req, res) => {
             const durasi = Math.ceil((checkout - checkin) / (1000 * 60 * 60 * 24));
             
             // Hitung total per kamar
-            const jumlahPerKamar = kamar.harga_per_malam * durasi;
+            const jumlahPerKamar = parseFloat((kamar.harga_per_malam * durasi).toFixed(2));
+
+            // Validasi jumlah pembayaran agar tidak melebihi batas
+            if (jumlahPerKamar < 0 || jumlahPerKamar > 99999999999999) { // Batas atas 99.999.999
+                return res.status(400).json({ message: "Out of range value for column 'jumlah' at row 1" });
+            }
+
             totalPembayaran += jumlahPerKamar;
 
             const status_pembayaran = metode_pembayaran === 'transfer' ? 'sukses' : 'pending';
