@@ -1,6 +1,7 @@
 import { Sequelize, DataTypes } from "sequelize";
 import db from "../config/db.config.js";
 import Reservasi from "./reservasi.models.js";
+import User from "./user.models.js";
 
 
 const Pembayaran = db.define(
@@ -52,8 +53,25 @@ const Pembayaran = db.define(
 
 
 
-Reservasi.hasOne(Pembayaran, { foreignKey: 'reservasi_id' });
-Pembayaran.belongsTo(Reservasi, { foreignKey: 'reservasi_id' });
+Reservasi.hasOne(Pembayaran, { 
+    foreignKey: 'reservasi_id',
+    as: 'Pembayaran'
+});
+
+Pembayaran.belongsTo(Reservasi, { 
+    foreignKey: 'reservasi_id',
+    as: 'Reservasi'
+});
+
+Reservasi.belongsTo(User, { 
+    foreignKey: 'user_id',
+    as: 'User'
+});
+
+User.hasMany(Reservasi, { 
+    foreignKey: 'user_id',
+    as: 'Reservasis'
+});
 
 
 

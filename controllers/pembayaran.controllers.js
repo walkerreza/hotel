@@ -2,7 +2,9 @@ import Pembayaran from "../models/pembayaran.models.js";
 import Reservasi from "../models/reservasi.models.js";
 import Kamar from "../models/kamar.models.js";
 import User from "../models/user.models.js";
-
+import Notification from "../models/notification.model.js";
+import Log from "../models/log.model.js";
+import { Op } from 'sequelize';
 
 export const buatPembayaran = async (req, res) => {
     try {
@@ -29,6 +31,13 @@ export const buatPembayaran = async (req, res) => {
                 });
             }
 
+            const user = await User.findByPk(reservasi.user_id);
+            if (!user) {
+                return res.status(404).json({ 
+                    message: `User untuk reservasi ${reservasi_id} tidak ditemukan` 
+                });
+            }
+
             // Hitung durasi menginap
             const checkin = new Date(reservasi.tanggal_checkin);
             const checkout = new Date(reservasi.tanggal_checkout);
@@ -38,7 +47,7 @@ export const buatPembayaran = async (req, res) => {
             const jumlahPerKamar = parseFloat((kamar.harga_per_malam * durasi).toFixed(2));
 
             // Validasi jumlah pembayaran agar tidak melebihi batas
-            if (jumlahPerKamar < 0 || jumlahPerKamar > 99999999999999) { // Batas atas 99.999.999
+            if (jumlahPerKamar < 0 || jumlahPerKamar > 99999999999999) {
                 return res.status(400).json({ message: "Out of range value for column 'jumlah' at row 1" });
             }
 
@@ -56,28 +65,56 @@ export const buatPembayaran = async (req, res) => {
                 updated_at: new Date()
             });
 
+            // Tambah log pembayaran
+            await Log.create({
+                type: 'CREATE',
+                description: `Pembayaran baru dibuat untuk reservasi kamar ${kamar.nama_kamar} oleh ${user.username}`,
+                userId: user.id,
+                metadata: {
+                    pembayaranId: pembayaran.id,
+                    reservasiId: reservasi_id,
+                    jumlah: jumlahPerKamar,
+                    metodePembayaran: metode_pembayaran,
+                    statusPembayaran: status_pembayaran
+                }
+            });
+
+            // Buat notifikasi untuk admin
+            await Notification.create({
+                message: `Pembayaran baru: ${user.username} membayar reservasi kamar ${kamar.nama_kamar} (${status_pembayaran})`,
+                type: 'PEMBAYARAN',
+                metadata: {
+                    pembayaranId: pembayaran.id,
+                    reservasiId: reservasi_id,
+                    userId: user.id,
+                    jumlah: jumlahPerKamar,
+                    metodePembayaran: metode_pembayaran,
+                    statusPembayaran: status_pembayaran
+                }
+            });
+
             if (status_pembayaran === 'sukses') {
                 await reservasi.update({ 
-                    status_reservasi: 'selesai', 
                     updated_at: new Date() 
                 });
                 
-                await Kamar.update(
-                    { status_kamar: 'tersedia' },
-                    { where: { id: reservasi.kamar_id } }
-                );
+                // Tidak perlu mengubah status kamar menjadi tersedia
+                // karena kamar masih dalam masa pemesanan
             }
 
             pembayaranResults.push(pembayaran);
         }
 
-        res.json({
+        res.status(201).json({
             message: "Pembayaran berhasil dibuat",
-            total_pembayaran: totalPembayaran,
-            detail_pembayaran: pembayaranResults
+            data: {
+                pembayaran: pembayaranResults,
+                total_pembayaran: totalPembayaran
+            }
         });
 
     } catch (error) {
+        console.error('Error dalam membuat pembayaran:', error);
         if (error.message.includes("notNull Violation")) {
             res.status(400).json({ message: "Data pembayaran tidak lengkap" });
         } else {
@@ -89,10 +126,41 @@ export const buatPembayaran = async (req, res) => {
 
 export const daftarPembayaran = async (req, res) => {
     try {
-        const pembayarans = await Pembayaran.findAll();
-        res.json(pembayarans);
+        const pembayarans = await Pembayaran.findAll({
+            include: [{
+                model: Reservasi,
+                as: 'Reservasi',
+                required: true,
+                include: [{
+                    model: User,
+                    as: 'User',
+                    required: true,
+                    attributes: ['id', 'username', 'email']
+                }]
+            }],
+            order: [['created_at', 'DESC']]
+        });
+
+        // Log untuk debugging
+        console.log('Raw pembayaran data:', JSON.stringify(pembayarans, null, 2));
+
+        // Transform data untuk response
+        const transformedPembayarans = pembayarans.map(pembayaran => {
+            const plain = pembayaran.get({ plain: true });
+            return {
+                ...plain,
+                user: plain.Reservasi?.User || null
+            };
+        });
+
+        res.json(transformedPembayarans);
     } catch (error) {
-        res.status(500).json({ message: error.message });
+        console.error('Error in daftarPembayaran:', error);
+        res.status(500).json({
+            message: "Gagal mengambil data pembayaran",
+            error: error.message,
+            stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+        });
     }
 };
 
@@ -144,9 +212,11 @@ export const updateStatusPembayaran = async (req, res) => {
 
      
         if (status === 'sukses') {
-            const reservasi = await Reservasis.findByPk(pembayaran.reservasi_id);
+            const reservasi = await Reservasi.findByPk(pembayaran.reservasi_id);
             if (reservasi) {
-                await reservasi.update({ status_reservasi: 'selesai', updated_at: new Date() });
+                await reservasi.update({ 
+                    updated_at: new Date() 
+                });
             }
         }
 
@@ -209,4 +279,118 @@ export const logPembayaranDanReservasi = async (req, res) => {
     } catch (error) {
         res.status(500).json({ message: error.message }); 
     }
-}
+};
+
+export const daftarPembayaranByUserId = async (req, res) => {
+    try {
+        const { userId } = req.params;
+        const { status_pembayaran, tanggal_pembayaran } = req.query;
+        
+        let whereClause = {};
+        
+        // Add status filter if provided
+        if (status_pembayaran && status_pembayaran !== 'all') {
+            whereClause.status_pembayaran = status_pembayaran;
+        }
+        
+        // Add date filter if provided
+        if (tanggal_pembayaran) {
+            const startDate = new Date(tanggal_pembayaran);
+            const endDate = new Date(tanggal_pembayaran);
+            endDate.setDate(endDate.getDate() ); // Include the entire day
+            
+            whereClause.tanggal_pembayaran = {
+                [Op.gte]: startDate,
+                [Op.lt]: endDate
+            };
+        }
+        
+        const pembayaranList = await Pembayaran.findAll({
+            where: whereClause,
+            include: [
+                {
+                    model: Reservasi,
+                    where: { user_id: userId },
+                    include: [
+                        {
+                            model: Kamar,
+                            attributes: ['nomor_kamar', 'tipe_kamar']
+                        }
+                    ]
+                }
+            ],
+            order: [['tanggal_pembayaran', 'DESC']]
+        });
+        
+        res.json(pembayaranList);
+    } catch (error) {
+        console.error('Error fetching payment history:', error);
+        res.status(500).json({ message: 'Failed to fetch payment history' });
+    }
+};
+
+export const daftarPembayaranByUser = async (req, res) => {
+    try {
+        const { userId } = req.params;
+        const { status_pembayaran, tanggal_pembayaran } = req.query;
+        
+        console.log('Fetching payments for user:', userId, 'with filters:', { status_pembayaran, tanggal_pembayaran });
+
+        let whereClause = {};
+        
+        // Filter berdasarkan status jika ada
+        if (status_pembayaran && status_pembayaran !== 'all') {
+            whereClause.status_pembayaran = status_pembayaran;
+        }
+        
+        // Filter berdasarkan tanggal jika ada
+        if (tanggal_pembayaran) {
+            const startDate = new Date(tanggal_pembayaran);
+            const endDate = new Date(tanggal_pembayaran);
+            endDate.setHours(23, 59, 59, 999);
+            
+            whereClause.tanggal_pembayaran = {
+                [Op.between]: [startDate, endDate]
+            };
+        }
+
+        const pembayarans = await Pembayaran.findAll({
+            where: whereClause,
+            include: [{
+                model: Reservasi,
+                as: 'Reservasi',
+                required: true,
+                where: { user_id: userId },
+                include: [{
+                    model: Kamar,
+                    attributes: ['nomor_kamar', 'tipe_kamar']
+                }]
+            }],
+            order: [['tanggal_pembayaran', 'DESC']]
+        });
+
+        console.log(`Found ${pembayarans.length} payments for user ${userId}`);
+        
+        // Transform data untuk response
+        const transformedData = pembayarans.map(pembayaran => ({
+            id: pembayaran.id,
+            reservasi_id: pembayaran.reservasi_id,
+            metode_pembayaran: pembayaran.metode_pembayaran,
+            jumlah: pembayaran.jumlah,
+            status_pembayaran: pembayaran.status_pembayaran,
+            tanggal_pembayaran: pembayaran.tanggal_pembayaran,
+            kamar: pembayaran.Reservasi?.Kamar ? {
+                nomor_kamar: pembayaran.Reservasi.Kamar.nomor_kamar,
+                tipe_kamar: pembayaran.Reservasi.Kamar.tipe_kamar
+            } : null
+        }));
+
+        res.json(transformedData);
+    } catch (error) {
+        console.error('Error in daftarPembayaranByUser:', error);
+        res.status(500).json({ 
+            message: "Gagal mengambil data pembayaran",
+            error: error.message 
+        });
+    }
+};

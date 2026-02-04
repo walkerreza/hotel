@@ -1,14 +1,47 @@
 import express from "express";
-import { buatPembayaran, daftarPembayaran, updateStatusPembayaran, logPembayaranDanReservasi,hapusPembayaran } from "../controllers/pembayaran.controllers.js";
+import { buatPembayaran, daftarPembayaran, updateStatusPembayaran, logPembayaranDanReservasi, hapusPembayaran, daftarPembayaranByUser } from "../controllers/pembayaran.controllers.js";
+import { authenticateToken } from "../middleware/VerifyTokens.js";
 import { isAdmin } from "../middleware/CheckRole.js";
+import { logActivity } from "../middleware/ActivityLogger.js";
 
 const routerPembayaran = express.Router();
-routerPembayaran.post("/", buatPembayaran);
-routerPembayaran.get("/", daftarPembayaran);
-routerPembayaran.put("/:id/status", updateStatusPembayaran);
-routerPembayaran.get("/log/:id", logPembayaranDanReservasi); // Rute untuk log berdasarkan ID
-routerPembayaran.get("/log/username/:username", logPembayaranDanReservasi);
-routerPembayaran.delete("/:id?",hapusPembayaran); //jika id kosong maka hapus semua data pembayaran
 
+routerPembayaran.post("/", 
+    authenticateToken,
+    logActivity('CREATE', 'Membuat pembayaran baru'),
+    buatPembayaran
+);
+
+routerPembayaran.get("/", 
+    authenticateToken,
+    logActivity('READ', 'Melihat daftar pembayaran'),
+    daftarPembayaran
+);
+
+routerPembayaran.put("/:id/status", 
+    authenticateToken,
+    isAdmin, 
+    logActivity('UPDATE', 'Mengupdate status pembayaran'),
+    updateStatusPembayaran
+);
+
+routerPembayaran.get("/log/:id", 
+    authenticateToken,
+    logActivity('READ', 'Melihat log pembayaran'),
+    logPembayaranDanReservasi
+);
+
+routerPembayaran.delete("/:id?", 
+    authenticateToken,
+    isAdmin,
+    logActivity('DELETE', 'Menghapus pembayaran'),
+    hapusPembayaran
+);
+
+routerPembayaran.get("/user/:userId", 
+    authenticateToken,
+    logActivity('READ', 'Melihat riwayat pembayaran user'),
+    daftarPembayaranByUser
+);
 
 export default routerPembayaran;
